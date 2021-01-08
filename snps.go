@@ -239,7 +239,7 @@ func writeOutput(cSNPs chan snpLine, cErr chan error, cWriteDone chan bool) {
 func main() {
 
 	if len(os.Args) != 3 {
-		os.Stderr.WriteString("Usage: ./snps reference.fasta alignment.fasta > snps.csv")
+		os.Stderr.WriteString("Usage: ./snps reference.fasta alignment.fasta > snps.csv\n")
 	} else {
 		referenceFile := os.Args[1]
 		alignmentFile := os.Args[2]
