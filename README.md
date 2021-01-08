@@ -1,6 +1,6 @@
 ## snps
 
-Find nucleotide changes between each sequence in an alignment, relative to a reference sequence.
+Find nucleotide changes between each sequence in an alignment and a reference sequence.
 
 ### usage
 
