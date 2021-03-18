@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"sync"
 	"strconv"
+
+	"runtime/pprof"
 )
 
 // encodedFastaRecord is a struct for one Fasta record
@@ -94,9 +96,15 @@ func makeDecodingArray() []string {
 	return byteArray
 }
 
+var fastaRecordPool = sync.Pool{
+	// New optionally specifies a function to generate
+	// a value when Get would otherwise return nil.
+	New: func() interface{} { return new(encodedFastaRecord) },
+}
+
 // readEncodeAlignment reads an alignment in fasta format to a channel
 // of encodedFastaRecord structs - converting sequence to EP's bitwise coding scheme
-func readEncodeAlignment(infile string, chnl chan encodedFastaRecord, chnlerr chan error, cdone chan bool) {
+func readEncodeAlignment(infile string, chnl chan *encodedFastaRecord, chnlerr chan error, cdone chan bool) {
 
 	f, err := os.Open(infile)
 
@@ -113,11 +121,13 @@ func readEncodeAlignment(infile string, chnl chan encodedFastaRecord, chnlerr ch
 
 	first := true
 
+	// var fr encodedFastaRecord
 	var id string
 	var description string
-	var seqBuffer []byte
+	// var seqBuffer [29903]byte
+	alreadyFilled := 0
 	var line []byte
-
+	var encodedLine [29903]byte
 	counter := 0
 
 	for s.Scan() {
@@ -136,24 +146,46 @@ func readEncodeAlignment(infile string, chnl chan encodedFastaRecord, chnlerr ch
 
 		} else if line[0] == '>' {
 
-			fr := encodedFastaRecord{ID: id, Description: description, Seq: seqBuffer, idx: counter}
+			fr := fastaRecordPool.Get().(*encodedFastaRecord)
+			// fr = encodedFastaRecord{}
+
+			fr.ID = id
+			fr.Description = description
+			if fr.Seq == nil {
+				fr.Seq = make([]byte, len(encodedLine))
+			}
+			_ = copy(fr.Seq, encodedLine[:])
+			fr.idx = counter
+
 			chnl <- fr
 			counter++
 
 			description = string(line[1:])
 			id = strings.Fields(description)[0]
-			seqBuffer = make([]byte, 0)
+			// seqBuffer = make([]byte, 0)
+			alreadyFilled = 0
 
 		} else {
-			encodedLine := make([]byte, len(line))
+			// encodedLine = make([]byte, len(line))
 			for i := range(line) {
-				encodedLine[i] = encoding[line[i]]
+				encodedLine[i + alreadyFilled] = encoding[line[i]]
 			}
-			seqBuffer = append(seqBuffer, encodedLine...)
+			alreadyFilled += len(line)
+			// seqBuffer = append(seqBuffer, encodedLine...)
 		}
 	}
 
-	fr := encodedFastaRecord{ID: id, Description: description, Seq: seqBuffer, idx: counter}
+	fr := fastaRecordPool.Get().(*encodedFastaRecord)
+	// fr = encodedFastaRecord{}
+
+	fr.ID = id
+	fr.Description = description
+	// fr.Seq = seqBuffer[:]
+	if fr.Seq == nil {
+		fr.Seq = make([]byte, len(encodedLine))
+	}
+	_ = copy(fr.Seq, encodedLine[:])
+	fr.idx = counter
 	chnl <- fr
 
 	err = s.Err()
@@ -165,7 +197,7 @@ func readEncodeAlignment(infile string, chnl chan encodedFastaRecord, chnlerr ch
 }
 
 // getSNPs gets the SNPs between the reference and each Fasta record at a time
-func getSNPs(refSeq []byte, cFR chan encodedFastaRecord, cSNPs chan snpLine, cErr chan error) {
+func getSNPs(refSeq []byte, cFR chan *encodedFastaRecord, cSNPs chan snpLine, cErr chan error) {
 
 	DA := makeDecodingArray()
 
@@ -180,6 +212,7 @@ func getSNPs(refSeq []byte, cFR chan encodedFastaRecord, cSNPs chan snpLine, cEr
 				SNPs = append(SNPs, snpLine)
 			}
 		}
+		fastaRecordPool.Put(FR)
 		SL.snps = SNPs
 		cSNPs<- SL
 	}
@@ -238,6 +271,17 @@ func writeOutput(cSNPs chan snpLine, cErr chan error, cWriteDone chan bool) {
 // Run the program
 func main() {
 
+	f, err := os.Create("CPU.prof")
+	if err != nil {
+		log.Fatal("could not create CPU profile: ", err)
+	}
+	defer f.Close() // error handling omitted for example
+	if err := pprof.StartCPUProfile(f); err != nil {
+		log.Fatal("could not start CPU profile: ", err)
+	}
+	defer pprof.StopCPUProfile()
+
+
 	if len(os.Args) != 3 {
 		os.Stderr.WriteString("Usage: ./snps reference.fasta alignment.fasta > snps.csv\n")
 	} else {
@@ -246,10 +290,10 @@ func main() {
 
 		cErr := make(chan error)
 
-		cRef := make(chan encodedFastaRecord)
+		cRef := make(chan *encodedFastaRecord)
 		cRefDone := make(chan bool)
 
-		cFR := make(chan encodedFastaRecord)
+		cFR := make(chan *encodedFastaRecord)
 		cFRDone := make(chan bool)
 
 		cSNPs := make(chan snpLine, runtime.NumCPU())
@@ -321,5 +365,15 @@ func main() {
 				n--
 			}
 		}
+	}
+
+	f2, err := os.Create("mem.prof")
+	if err != nil {
+		log.Fatal("could not create memory profile: ", err)
+	}
+	defer f2.Close() // error handling omitted for example
+	runtime.GC() // get up-to-date statistics
+	if err := pprof.WriteHeapProfile(f2); err != nil {
+		log.Fatal("could not write memory profile: ", err)
 	}
 }
