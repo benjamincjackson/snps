@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -324,8 +325,76 @@ func writeOutput(outFile string, cSNPs chan snpLine, cErr chan error, cWriteDone
 	cWriteDone <- true
 }
 
+func aggregateWriteOutput(outFile string, threshold float64, cSNPs chan snpLine, cErr chan error, cWriteDone chan bool) {
+
+	propMap := make(map[string]float64)
+
+	var f *os.File
+	var err error
+
+	if outFile != "stdout" {
+		f, err = os.Create(outFile)
+		if err != nil {
+			cErr <- err
+		}
+	} else {
+		f = os.Stdout
+	}
+
+	defer f.Close()
+
+	_, err = f.WriteString("change,proportion\n")
+	if err != nil {
+		cErr <- err
+	}
+
+	counter := 0.0
+
+	for snpLine := range cSNPs {
+		counter++
+		for _, snp := range snpLine.snps {
+			if _, ok := propMap[snp]; ok {
+				propMap[snp]++
+			} else {
+				propMap[snp] = 1.0
+			}
+		}
+	}
+
+	order := make([]string, 0)
+	for k, _ := range propMap {
+		order = append(order, k)
+	}
+
+	sort.SliceStable(order, func(i, j int) bool {
+		pos_i, err := strconv.Atoi(order[i][1 : len(order[i])-1])
+		if err != nil {
+			cErr <- err
+		}
+		pos_j, err := strconv.Atoi(order[j][1 : len(order[j])-1])
+		if err != nil {
+			cErr <- err
+		}
+		alt_i := order[i][len(order[i])-1]
+		alt_j := order[j][len(order[j])-1]
+		return pos_i < pos_j || (pos_i == pos_j && alt_i < alt_j)
+	})
+
+	for _, snp := range order {
+		if propMap[snp]/counter < threshold {
+			continue
+		}
+		_, err = f.WriteString(snp + "," + strconv.FormatFloat(propMap[snp]/counter, 'f', 4, 64) + "\n")
+		if err != nil {
+			cErr <- err
+		}
+	}
+
+	cWriteDone <- true
+}
+
 // Run the program
-func snps(alignmentFile string, referenceFile string, hardGaps bool, outFile string) error {
+func snps(alignmentFile string, referenceFile string, hardGaps bool, aggregate bool, threshold float64, outFile string) error {
 
 	cErr := make(chan error)
 
@@ -358,7 +427,12 @@ func snps(alignmentFile string, referenceFile string, hardGaps bool, outFile str
 
 	go readEncodeAlignment(alignmentFile, hardGaps, cFR, cErr, cFRDone)
 
-	go writeOutput(outFile, cSNPs, cErr, cWriteDone)
+	switch aggregate {
+	case true:
+		go aggregateWriteOutput(outFile, threshold, cSNPs, cErr, cWriteDone)
+	case false:
+		go writeOutput(outFile, cSNPs, cErr, cWriteDone)
+	}
 
 	var wgSNPs sync.WaitGroup
 	wgSNPs.Add(runtime.NumCPU())
@@ -411,14 +485,19 @@ var snpsReference string
 var snpsQuery string
 var snpsOutfile string
 var hardGaps bool
+var aggregate bool
+var thresh float64
 
 func init() {
 	mainCmd.Flags().StringVarP(&snpsReference, "reference", "r", "", "Reference sequence, in fasta format")
 	mainCmd.Flags().StringVarP(&snpsQuery, "query", "q", "stdin", "Alignment of sequences to find snps in, in fasta format")
 	mainCmd.Flags().StringVarP(&snpsOutfile, "outfile", "o", "stdout", "Output to write")
 	mainCmd.Flags().BoolVarP(&hardGaps, "hard-gaps", "", false, "don't treat alignment gaps as missing data")
+	mainCmd.Flags().BoolVarP(&aggregate, "aggregate", "", false, "report the proportions of each change")
+	mainCmd.Flags().Float64VarP(&thresh, "threshold", "", 0.0, "if --aggregate, only report snps with a freq above this value")
 
 	mainCmd.Flags().Lookup("hard-gaps").NoOptDefVal = "true"
+	mainCmd.Flags().Lookup("aggregate").NoOptDefVal = "true"
 
 	mainCmd.Flags().SortFlags = false
 }
@@ -429,7 +508,7 @@ var mainCmd = &cobra.Command{
 	Long:  `snps...`,
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
 
-		err = snps(snpsQuery, snpsReference, hardGaps, snpsOutfile)
+		err = snps(snpsQuery, snpsReference, hardGaps, aggregate, thresh, snpsOutfile)
 
 		return
 	},
