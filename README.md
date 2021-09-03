@@ -11,4 +11,4 @@ git clone https://github.com/benjamincjackson/snps.git
 cd snps/
 go build snps.go
 
-./snps reference.fasta alignment.fasta > snps.csv
+./snps -r reference.fasta -q alignment.fasta > snps.csv
