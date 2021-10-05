@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"errors"
+	"io"
 	"os"
 	"runtime"
 	"sort"
@@ -26,6 +27,38 @@ type snpLine struct {
 	queryname string
 	snps      []string
 	idx       int
+}
+
+func openIn(inFile string) (*os.File, error) {
+	var err error
+	var f *os.File
+
+	if inFile != "stdin" {
+		f, err = os.Open(inFile)
+		if err != nil {
+			return f, err
+		}
+	} else {
+		f = os.Stdin
+	}
+
+	return f, nil
+}
+
+func openOut(outFile string) (*os.File, error) {
+	var err error
+	var f *os.File
+
+	if outFile != "stdout" {
+		f, err = os.Open(outFile)
+		if err != nil {
+			return f, err
+		}
+	} else {
+		f = os.Stdout
+	}
+
+	return f, nil
 }
 
 // makeEncodingArray returns an array whose indices are the byte representations
@@ -133,29 +166,6 @@ func makeDecodingArray() []string {
 	byteArray[112] = "B"
 	byteArray[240] = "N"
 	byteArray[244] = "-"
-	byteArray[242] = "?"
-
-	return byteArray
-}
-
-func makeDecodingArrayHardGaps() []string {
-	byteArray := make([]string, 256)
-
-	byteArray[136] = "A"
-	byteArray[72] = "G"
-	byteArray[40] = "C"
-	byteArray[24] = "T"
-	byteArray[192] = "R"
-	byteArray[160] = "M"
-	byteArray[144] = "W"
-	byteArray[96] = "S"
-	byteArray[80] = "K"
-	byteArray[48] = "Y"
-	byteArray[224] = "V"
-	byteArray[176] = "H"
-	byteArray[208] = "D"
-	byteArray[112] = "B"
-	byteArray[240] = "N"
 	byteArray[4] = "-"
 	byteArray[242] = "?"
 
@@ -164,15 +174,7 @@ func makeDecodingArrayHardGaps() []string {
 
 // readEncodeAlignment reads an alignment in fasta format to a channel
 // of encodedFastaRecord structs - converting sequence to EP's bitwise coding scheme
-func readEncodeAlignment(infile string, hardGaps bool, chnl chan encodedFastaRecord, chnlerr chan error, cdone chan bool) {
-
-	f, err := os.Open(infile)
-
-	if err != nil {
-		chnlerr <- err
-	}
-
-	defer f.Close()
+func readEncodeAlignment(r io.Reader, hardGaps bool, chnl chan encodedFastaRecord, chnlerr chan error, cdone chan bool) {
 
 	var encoding []byte
 	switch hardGaps {
@@ -182,7 +184,7 @@ func readEncodeAlignment(infile string, hardGaps bool, chnl chan encodedFastaRec
 		encoding = makeEncodingArray()
 	}
 
-	s := bufio.NewScanner(f)
+	s := bufio.NewScanner(r)
 
 	first := true
 
@@ -229,24 +231,17 @@ func readEncodeAlignment(infile string, hardGaps bool, chnl chan encodedFastaRec
 	fr := encodedFastaRecord{ID: id, Description: description, Seq: seqBuffer, idx: counter}
 	chnl <- fr
 
-	err = s.Err()
-	if err != nil {
-		chnlerr <- err
+	if s.Err() != nil {
+		chnlerr <- s.Err()
 	}
 
 	cdone <- true
 }
 
 // getSNPs gets the SNPs between the reference and each Fasta record at a time
-func getSNPs(refSeq []byte, hardGaps bool, cFR chan encodedFastaRecord, cSNPs chan snpLine, cErr chan error) {
+func getSNPs(refSeq []byte, cFR chan encodedFastaRecord, cSNPs chan snpLine, cErr chan error) {
 
-	var DA []string
-	switch hardGaps {
-	case true:
-		DA = makeDecodingArrayHardGaps()
-	case false:
-		DA = makeDecodingArray()
-	}
+	DA := makeDecodingArray()
 
 	for FR := range cFR {
 		SL := snpLine{}
@@ -268,27 +263,15 @@ func getSNPs(refSeq []byte, hardGaps bool, cFR chan encodedFastaRecord, cSNPs ch
 
 // writeOutput writes the output to stdout as it arrives. It uses a map to write things
 // in the same order as they are in the input file.
-func writeOutput(outFile string, cSNPs chan snpLine, cErr chan error, cWriteDone chan bool) {
+func writeOutput(w io.Writer, cSNPs chan snpLine, cErr chan error, cWriteDone chan bool) {
 
 	outputMap := make(map[int]snpLine)
 
 	counter := 0
 
-	var f *os.File
 	var err error
 
-	if outFile != "stdout" {
-		f, err = os.Create(outFile)
-		if err != nil {
-			cErr <- err
-		}
-	} else {
-		f = os.Stdout
-	}
-
-	defer f.Close()
-
-	_, err = f.WriteString("query,SNPs\n")
+	_, err = w.Write([]byte("query,SNPs\n"))
 	if err != nil {
 		cErr <- err
 	}
@@ -297,7 +280,7 @@ func writeOutput(outFile string, cSNPs chan snpLine, cErr chan error, cWriteDone
 		outputMap[snpLine.idx] = snpLine
 
 		if SL, ok := outputMap[counter]; ok {
-			_, err := f.WriteString(SL.queryname + "," + strings.Join(SL.snps, "|") + "\n")
+			_, err = w.Write([]byte(SL.queryname + "," + strings.Join(SL.snps, "|") + "\n"))
 			if err != nil {
 				cErr <- err
 			}
@@ -314,7 +297,7 @@ func writeOutput(outFile string, cSNPs chan snpLine, cErr chan error, cWriteDone
 			break
 		}
 		SL := outputMap[counter]
-		_, err := f.WriteString(SL.queryname + "," + strings.Join(SL.snps, "|") + "\n")
+		_, err = w.Write([]byte(SL.queryname + "," + strings.Join(SL.snps, "|") + "\n"))
 		if err != nil {
 			cErr <- err
 		}
@@ -325,25 +308,13 @@ func writeOutput(outFile string, cSNPs chan snpLine, cErr chan error, cWriteDone
 	cWriteDone <- true
 }
 
-func aggregateWriteOutput(outFile string, threshold float64, cSNPs chan snpLine, cErr chan error, cWriteDone chan bool) {
+func aggregateWriteOutput(w io.Writer, threshold float64, cSNPs chan snpLine, cErr chan error, cWriteDone chan bool) {
 
 	propMap := make(map[string]float64)
 
-	var f *os.File
 	var err error
 
-	if outFile != "stdout" {
-		f, err = os.Create(outFile)
-		if err != nil {
-			cErr <- err
-		}
-	} else {
-		f = os.Stdout
-	}
-
-	defer f.Close()
-
-	_, err = f.WriteString("change,proportion\n")
+	_, err = w.Write([]byte("change,proportion\n"))
 	if err != nil {
 		cErr <- err
 	}
@@ -384,7 +355,7 @@ func aggregateWriteOutput(outFile string, threshold float64, cSNPs chan snpLine,
 		if propMap[snp]/counter < threshold {
 			continue
 		}
-		_, err = f.WriteString(snp + "," + strconv.FormatFloat(propMap[snp]/counter, 'f', 4, 64) + "\n")
+		_, err = w.Write([]byte(snp + "," + strconv.FormatFloat(propMap[snp]/counter, 'f', 4, 64) + "\n"))
 		if err != nil {
 			cErr <- err
 		}
@@ -394,7 +365,7 @@ func aggregateWriteOutput(outFile string, threshold float64, cSNPs chan snpLine,
 }
 
 // Run the program
-func snps(alignmentFile string, referenceFile string, hardGaps bool, aggregate bool, threshold float64, outFile string) error {
+func snps(rQ io.Reader, rR io.Reader, hardGaps bool, aggregate bool, threshold float64, w io.Writer) error {
 
 	cErr := make(chan error)
 
@@ -409,7 +380,7 @@ func snps(alignmentFile string, referenceFile string, hardGaps bool, aggregate b
 
 	cWriteDone := make(chan bool)
 
-	go readEncodeAlignment(referenceFile, hardGaps, cRef, cErr, cRefDone)
+	go readEncodeAlignment(rR, hardGaps, cRef, cErr, cRefDone)
 
 	var refSeq []byte
 
@@ -425,13 +396,13 @@ func snps(alignmentFile string, referenceFile string, hardGaps bool, aggregate b
 		}
 	}
 
-	go readEncodeAlignment(alignmentFile, hardGaps, cFR, cErr, cFRDone)
+	go readEncodeAlignment(rQ, hardGaps, cFR, cErr, cFRDone)
 
 	switch aggregate {
 	case true:
-		go aggregateWriteOutput(outFile, threshold, cSNPs, cErr, cWriteDone)
+		go aggregateWriteOutput(w, threshold, cSNPs, cErr, cWriteDone)
 	case false:
-		go writeOutput(outFile, cSNPs, cErr, cWriteDone)
+		go writeOutput(w, cSNPs, cErr, cWriteDone)
 	}
 
 	var wgSNPs sync.WaitGroup
@@ -439,7 +410,7 @@ func snps(alignmentFile string, referenceFile string, hardGaps bool, aggregate b
 
 	for n := 0; n < runtime.NumCPU(); n++ {
 		go func() {
-			getSNPs(refSeq, hardGaps, cFR, cSNPs, cErr)
+			getSNPs(refSeq, cFR, cSNPs, cErr)
 			wgSNPs.Done()
 		}()
 	}
@@ -508,9 +479,27 @@ var mainCmd = &cobra.Command{
 	Long:  `snps...`,
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
 
-		err = snps(snpsQuery, snpsReference, hardGaps, aggregate, thresh, snpsOutfile)
+		queryIn, err := openIn(snpsQuery)
+		if err != nil {
+			return err
+		}
+		defer queryIn.Close()
 
-		return
+		refIn, err := openIn(snpsReference)
+		if err != nil {
+			return err
+		}
+		defer refIn.Close()
+
+		snpsOut, err := openOut(snpsOutfile)
+		if err != nil {
+			return err
+		}
+		defer snpsOut.Close()
+
+		err = snps(queryIn, refIn, hardGaps, aggregate, thresh, snpsOut)
+
+		return err
 	},
 }
 
