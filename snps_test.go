@@ -1,8 +1,10 @@
 package main
 
 import (
-	"testing"
+	"bytes"
+	"fmt"
 	"strings"
+	"testing"
 )
 
 func intersectionStringArrays(A []string, B []string) []string {
@@ -21,7 +23,7 @@ func intersectionStringArrays(A []string, B []string) []string {
 func TestEncoding(t *testing.T) {
 
 	nucs := []byte{'A', 'G', 'C', 'T', 'R', 'M', 'W', 'S', 'K', 'Y', 'V', 'H', 'D', 'B', 'N', '-', '?',
-			'a', 'g', 'c', 't', 'r', 'm', 'w', 's', 'k', 'y', 'v', 'h', 'd', 'b', 'n'}
+		'a', 'g', 'c', 't', 'r', 'm', 'w', 's', 'k', 'y', 'v', 'h', 'd', 'b', 'n'}
 
 	lookupChar := make(map[byte][]string)
 
@@ -88,16 +90,156 @@ func TestEncoding(t *testing.T) {
 
 func TestDecoding(t *testing.T) {
 	nucs := []byte{'A', 'G', 'C', 'T', 'R', 'M', 'W', 'S', 'K', 'Y', 'V', 'H', 'D', 'B', 'N', '-', '?',
-			'a', 'g', 'c', 't', 'r', 'm', 'w', 's', 'k', 'y', 'v', 'h', 'd', 'b', 'n'}
+		'a', 'g', 'c', 't', 'r', 'm', 'w', 's', 'k', 'y', 'v', 'h', 'd', 'b', 'n'}
 
 	EA := makeEncodingArray()
 	DA := makeDecodingArray()
 
-	for _, nuc := range(nucs) {
+	for _, nuc := range nucs {
 		a := EA[nuc]
 		b := DA[a]
 		if strings.ToUpper(string(nuc)) != b {
 			t.Errorf("problem in decoding test: %s", string(nuc))
 		}
+	}
+}
+
+func TestSNPs(t *testing.T) {
+	refData := []byte(`>ref
+ATGATG
+`)
+	queryData := []byte(
+		`>Query1
+ATGATG
+>Query2
+ATGATC
+>Query3
+ATTTTW
+`)
+
+	ref := bytes.NewReader(refData)
+	query := bytes.NewReader(queryData)
+
+	out := new(bytes.Buffer)
+
+	err := snps(query, ref, false, false, 0.0, out)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if string(out.Bytes()) != `query,SNPs
+Query1,
+Query2,G6C
+Query3,G3T|A4T|G6W
+` {
+		t.Errorf("problem in TestSNPs()")
+		fmt.Println(string(out.Bytes()))
+	}
+}
+
+func TestSNPsHardGaps(t *testing.T) {
+	refData := []byte(`>ref
+ATGATG
+`)
+	queryData := []byte(
+		`>Query1
+--GATG
+>Query2
+ATGATC
+>Query3
+ATTTTW
+`)
+
+	ref := bytes.NewReader(refData)
+	query := bytes.NewReader(queryData)
+
+	out := new(bytes.Buffer)
+
+	err := snps(query, ref, true, false, 0.0, out)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if string(out.Bytes()) != `query,SNPs
+Query1,A1-|T2-
+Query2,G6C
+Query3,G3T|A4T|G6W
+` {
+		t.Errorf("problem in TestSNPsHardGaps()")
+		fmt.Println(string(out.Bytes()))
+	}
+}
+
+func TestSNPsAggregate(t *testing.T) {
+	refData := []byte(`>ref
+ATGATG
+`)
+	queryData := []byte(
+		`>Query1
+ATGATG
+>Query2
+ATGATC
+>Query3
+ATTTTW
+>Query4
+ATTTTG
+`)
+
+	ref := bytes.NewReader(refData)
+	query := bytes.NewReader(queryData)
+
+	out := new(bytes.Buffer)
+
+	err := snps(query, ref, false, true, 0.0, out)
+	if err != nil {
+		t.Error(err)
+	}
+
+	// strconv.FormatFloat(propMap[snp]/counter, 'f', 4, 64) + "\n")
+
+	if string(out.Bytes()) != `change,proportion
+G3T,0.500000000
+A4T,0.500000000
+G6C,0.250000000
+G6W,0.250000000
+` {
+		t.Errorf("problem in TestSNPsAggregate()")
+		fmt.Println(string(out.Bytes()))
+	}
+}
+
+func TestSNPsAggregateThresh(t *testing.T) {
+	refData := []byte(`>ref
+ATGATG
+`)
+	queryData := []byte(
+		`>Query1
+ATGATG
+>Query2
+ATGATC
+>Query3
+ATTTTW
+>Query4
+ATTTTG
+`)
+
+	ref := bytes.NewReader(refData)
+	query := bytes.NewReader(queryData)
+
+	out := new(bytes.Buffer)
+
+	err := snps(query, ref, false, true, 0.26, out)
+	if err != nil {
+		t.Error(err)
+	}
+
+	// strconv.FormatFloat(propMap[snp]/counter, 'f', 4, 64) + "\n")
+
+	if string(out.Bytes()) != `change,proportion
+G3T,0.500000000
+A4T,0.500000000
+` {
+		t.Errorf("problem in TestSNPsAggregateThresh()")
+		fmt.Println(string(out.Bytes()))
 	}
 }

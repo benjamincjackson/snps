@@ -274,35 +274,26 @@ func writeOutput(w io.Writer, cSNPs chan snpLine, cErr chan error, cWriteDone ch
 	_, err = w.Write([]byte("query,SNPs\n"))
 	if err != nil {
 		cErr <- err
+		return
 	}
 
 	for snpLine := range cSNPs {
+
 		outputMap[snpLine.idx] = snpLine
 
-		if SL, ok := outputMap[counter]; ok {
-			_, err = w.Write([]byte(SL.queryname + "," + strings.Join(SL.snps, "|") + "\n"))
-			if err != nil {
-				cErr <- err
+		for {
+			if SL, ok := outputMap[counter]; ok {
+				_, err = w.Write([]byte(SL.queryname + "," + strings.Join(SL.snps, "|") + "\n"))
+				if err != nil {
+					cErr <- err
+					return
+				}
+				delete(outputMap, counter)
+				counter++
+			} else {
+				break
 			}
-			delete(outputMap, counter)
-			counter++
-		} else {
-			continue
 		}
-	}
-
-	for n := 1; n > 0; {
-		if len(outputMap) == 0 {
-			n--
-			break
-		}
-		SL := outputMap[counter]
-		_, err = w.Write([]byte(SL.queryname + "," + strings.Join(SL.snps, "|") + "\n"))
-		if err != nil {
-			cErr <- err
-		}
-		delete(outputMap, counter)
-		counter++
 	}
 
 	cWriteDone <- true
@@ -355,7 +346,7 @@ func aggregateWriteOutput(w io.Writer, threshold float64, cSNPs chan snpLine, cE
 		if propMap[snp]/counter < threshold {
 			continue
 		}
-		_, err = w.Write([]byte(snp + "," + strconv.FormatFloat(propMap[snp]/counter, 'f', 4, 64) + "\n"))
+		_, err = w.Write([]byte(snp + "," + strconv.FormatFloat(propMap[snp]/counter, 'f', 9, 64) + "\n"))
 		if err != nil {
 			cErr <- err
 		}
